@@ -364,3 +364,4 @@ FodyWeavers.xsd
 
 SDL2.dll
 SDL2_ttfd.dll
+/CMakeUserPresets.json
