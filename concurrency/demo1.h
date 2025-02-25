@@ -39,9 +39,11 @@ class Demo : public Platform<SDLRenderer>
 	std::thread loaderThread;
 
 	std::queue<DataEvent> workItems;
-	std::mutex workMutex, loadMutex;
-	std::condition_variable loadCondition;
+	std::mutex workMutex, loadMutex, renderMutex;
+	std::condition_variable loadCondition, renderCondition, renderCompleteCondition;
 	std::queue<std::string> filesToLoad;
+	std::atomic<int> workLeft;
+	std::queue<std::tuple<int, int, double>> renderWork;
 
 	bool saving, loading;
 	int loadBarWidth;
@@ -52,8 +54,10 @@ public:
 	Demo();
 	~Demo();
 
+	void fillLines(int startLine, int endLine, double timeSin);
 	void run();
 	void saveData();
 	void loadData();
 	void mouseButton(int x, int y, bool isDown, int buttonIndex, int clicks) override;
+	void render();
 };

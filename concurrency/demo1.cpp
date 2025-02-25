@@ -22,23 +22,22 @@ Demo::Demo() : Platform(1920, 1080, "Concurrency Demo")
 	numThreads = hardwareThreads == 0 ? fallbackThreads : hardwareThreads;
 	threads.resize(numThreads - 1);
 
+	for (int i = 0; i < threads.size(); i++)
+	{
+		threads[i] = std::thread(&Demo::render, this);
+		if (threads[i].joinable())
+		{
+			threads[i].detach();
+		}
+	}
+	workLeft = 0;
+
 	// dispatch a loader thread to keep checking there is data to be load
 	loaderThread = std::thread(&Demo::loadData, this);
 	if (loaderThread.joinable())
 	{
 		loaderThread.detach();
 	}
-
-
-
-
-
-
-
-
-
-
-
 
 	loadBarColor = { .r = 154, .g = 112, .b = 73, .a = 255 };
 	loadBarWidth = 350;
@@ -72,33 +71,28 @@ Demo::~Demo()
 	SDL_DestroyTexture(textSavingMsg.texture);
 }
 
+void Demo::fillLines(int startLine, int endLine, double timeSin)
+{
+	for (int y = startLine; y <= endLine; ++y)
+	{
+		for (int x = -halfWidth; x < halfWidth; ++x)
+		{
+			const double dist = sqrt(x * x + y * y) * timeSin + globalTime;
+			const double sinVal = (sin((y + halfHeight) / dist + globalTime) + 1) / 2;
+			const float colorScale = dist + timeSin * 10;
+
+			renderer.drawPixel(x, y, pixel(
+				static_cast<uint8_t>(sinVal * colorScale),
+				static_cast<uint8_t>((1.0f - timeSin) * colorScale * sinVal),
+				static_cast<uint8_t>((1.0f - timeSin) * colorScale * sinVal),
+				255
+			).intValue);
+		}
+	}
+}
+
 void Demo::run()
 {
-	const int halfWidth = width / 2;
-	const int halfHeight = height / 2;
-
-	// function to fill a number of horizontal lines with pixels
-	// fills range of startLine to endLine
-	auto fillLines = [this, halfWidth, halfHeight](int startLine, int endLine, double timeSin)
-	{
-		for (int y = startLine; y <= endLine; ++y)
-		{
-			for (int x = -halfWidth; x < halfWidth; ++x)
-			{
-				const double dist = sqrt(x * x + y * y) * timeSin + globalTime;
-				const double sinVal = (sin((y + halfHeight) / dist + globalTime) + 1) / 2;
-				const float colorScale = dist + timeSin * 10;
-
-				renderer.drawPixel(x, y, pixel(
-					static_cast<uint8_t>(sinVal * colorScale),
-					static_cast<uint8_t>((1.0f - timeSin) * colorScale * sinVal),
-					static_cast<uint8_t>((1.0f - timeSin) * colorScale * sinVal),
-					255
-				).intValue);
-			}
-		}
-	};
-
 	while (!done)
 	{
 		const double timeSin = (sin(globalTime) + 1) / 2;
@@ -106,12 +100,12 @@ void Demo::run()
 		startFrame();
 
 		renderer.lockTexture(); // we'll be writing pixel data to it
-		if (useSingleThread)
+		if (renderMode == RenderMode::single)
 		{
 			// using main thread to draw everything
 			fillLines(-halfHeight, halfHeight, timeSin);
 		}
-		else
+		else if (renderMode == RenderMode::multi)
 		{
 			// divide up work by: number of horizontal lines / number of threads
 			const int linesPerThread = height / numThreads; // Dividing work among all hardware-threads
@@ -121,7 +115,8 @@ void Demo::run()
 			for (int t = 0; t < threads.size(); ++t)
 			{
 				int endLine = startLine + linesPerThread;
-				threads[t] = std::thread(fillLines, startLine, endLine, timeSin);
+				//threads[t] = std::thread(fillLines, startLine, endLine, timeSin);
+				threads[t] = std::thread([this, startLine, endLine, timeSin]() { fillLines(startLine, endLine, timeSin); });
 				startLine += linesPerThread;
 			}
 
@@ -137,6 +132,34 @@ void Demo::run()
 				}
 			}
 		}
+		else if (renderMode == RenderMode::dedicated)
+		{
+			{
+				std::scoped_lock lock(renderMutex);
+				const int linesPerThread = height / threads.size(); // Dividing work among background threads
+				int startLine = -halfHeight;
+
+				// spawn numThreads and divide work
+				for (int t = 0; t < threads.size(); ++t)
+				{
+					int endLine = startLine + linesPerThread;
+					renderWork.emplace(startLine, endLine, timeSin);
+					startLine += linesPerThread;
+					workLeft++;
+				}
+				renderWork.emplace(startLine, halfHeight, timeSin);
+				workLeft++;
+				renderCondition.notify_all();
+			}
+
+			std::unique_lock completionLock(renderMutex);
+			renderCompleteCondition.wait(completionLock, [this]()
+			{
+				return workLeft == 0 || done;
+			});
+			completionLock.unlock();
+		}
+
 		renderer.unlockTexture();
 
 		// lock mutex while we're checking the work	queue
@@ -294,6 +317,30 @@ void Demo::mouseButton(int x, int y, bool isDown, int buttonIndex, int clicks)
 		filesToLoad.emplace("some_filename_2.bin");
 		filesToLoad.emplace("music.bin");
 		loadCondition.notify_one();
+	}
+}
+
+void Demo::render()
+{
+	while (!done)
+	{
+		std::unique_lock lock(renderMutex);
+		renderCondition.wait(lock, [this]()
+		{
+			return renderWork.size() > 0 && !done;
+		});
+
+		auto work = renderWork.front();
+		renderWork.pop();
+		lock.unlock();
+
+		const int startLine = std::get<0>(work);
+		const int endLine = std::get<1>(work);
+		const double timeSin = std::get<2>(work);
+		fillLines(startLine, endLine, timeSin);
+
+		workLeft--;
+		renderCompleteCondition.notify_one();
 	}
 }
 

@@ -7,6 +7,11 @@
 #include <chrono>
 #include <fstream>
 
+enum class RenderMode
+{
+	single, multi, dedicated
+};
+
 struct SDL_Window;
 
 template <class Renderer>
@@ -23,21 +28,22 @@ protected:
 	unsigned long frameCount;
 	bool done;
 
-	int width, height;
-	bool useSingleThread;
+	int width, height, halfWidth, halfHeight;
+	RenderMode renderMode;
 
 public:
-	Platform(int width, int height, const std::string &title) : width(width), height(height), title(title)
+	Platform(int width, int height, const std::string &title) :
+		width(width), height(height), halfWidth(width / 2), halfHeight(height / 2), title(title)
 	{
 		SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS);
 		window = SDL_CreateWindow("Concurrency", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, width, height, 0);
 
 		done = false;
-		useSingleThread = true;
 		globalTime = 0;
 		titleUpdateTime = 0;
 		frameCount = 0;
 		dt = 0;
+		renderMode = RenderMode::single;
 
 		renderer.initialize(window, width, height);
 		prevTime = std::chrono::high_resolution_clock::now();
@@ -82,7 +88,21 @@ public:
 					{
 						globalTime = 0;
 						frameCount = 0;
-						useSingleThread = !useSingleThread;
+						renderMode = RenderMode::single;
+						break;
+					}
+					case SDLK_F3:
+					{
+						globalTime = 0;
+						frameCount = 0;
+						renderMode = RenderMode::multi;
+						break;
+					}
+					case SDLK_F4:
+					{
+						globalTime = 0;
+						frameCount = 0;
+						renderMode = RenderMode::dedicated;
 						break;
 					}
 				}
@@ -117,7 +137,7 @@ public:
 
 			// update the window titlebar
 			std::ostringstream ss;
-			ss << (useSingleThread ? " [Single] " : " [Multi] ") << title << " - Frame Time: " << secs
+			ss << (renderMode == RenderMode::single ? " [Single] " : " [Multi] ") << title << " - Frame Time: " << secs
 				<< " - FPS: " << frameCount / titleUpdateTime;
 			frameCount = 0;
 
